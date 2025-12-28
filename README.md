@@ -147,38 +147,30 @@ curl http://localhost:5000/api/notes
 
 1. Log in to AWS Console
 2. Launch EC2 Instance:
-   - **AMI**: Amazon Linux 2023 or Ubuntu 22.04 LTS
-   - **Instance Type**: t2.micro (free tier eligible)
-   - **Key Pair**: Create or select existing key pair
+   - **AMI**: Red Hat Enterprise Linux 10 (RHEL 10)
+   - **Instance Type**: t2.micro or t3.micro (free tier eligible)
+   - **Key Pair**: Create or select existing key pair for SSH access
    - **Security Group**: Configure the following rules:
-     - SSH (Port 22) - Your IP
+     - SSH (Port 22) - Your IP or 0.0.0.0/0
      - HTTP (Port 80) - Anywhere (0.0.0.0/0)
-     - Custom TCP (Port 5000) - Anywhere (for testing)
-     - MySQL (Port 3306) - Same VPC only
+   - **Storage**: 8 GB (default) or more if needed
 
 ### Step 2: Connect to EC2
 
 ```bash
 ssh -i your-key.pem ec2-user@your-ec2-public-ip
-
-# For Ubuntu
-ssh -i your-key.pem ubuntu@your-ec2-public-ip
 ```
 
-### Step 3: Install Dependencies
+### Step 3: Install Dependencies on RHEL 10
 
-**For Amazon Linux 2023:**
 ```bash
+# Update system
 sudo dnf update -y
-sudo dnf install python3 python3-pip git mariadb105-server -y
-sudo systemctl start mariadb
-sudo systemctl enable mariadb
-```
 
-**For Ubuntu 22.04:**
-```bash
-sudo apt update
-sudo apt install python3 python3-pip python3-venv git mariadb-server -y
+# Install Python, Git, and MariaDB
+sudo dnf install python3 python3-pip git mariadb-server -y
+
+# Start and enable MariaDB
 sudo systemctl start mariadb
 sudo systemctl enable mariadb
 ```
@@ -325,17 +317,17 @@ lsblk
 # Format the volume (ONLY FIRST TIME!)
 sudo mkfs -t ext4 /dev/xvdf
 
-# Create mount point
-sudo mkdir -p /mnt/backup
+# Create mount point at /backup
+sudo mkdir -p /backup
 
 # Mount the volume
-sudo mount /dev/xvdf /mnt/backup
+sudo mount /dev/xvdf /backup
 
 # Set permissions
-sudo chown ec2-user:ec2-user /mnt/backup
+sudo chown ec2-user:ec2-user /backup
 
 # Auto-mount on boot
-echo '/dev/xvdf /mnt/backup ext4 defaults,nofail 0 2' | sudo tee -a /etc/fstab
+echo '/dev/xvdf /backup ext4 defaults,nofail 0 2' | sudo tee -a /etc/fstab
 ```
 
 ### Step 3: Create Backup Script
@@ -350,7 +342,7 @@ Add the following:
 #!/bin/bash
 
 # Configuration
-BACKUP_DIR="/mnt/backup"
+BACKUP_DIR="/backup"
 DATE=$(date +%Y%m%d_%H%M%S)
 DB_USER="notesuser"
 DB_PASS="secure_password_here"
@@ -398,7 +390,7 @@ sudo /usr/local/bin/backup-notes.sh
 Check if backup was created:
 
 ```bash
-ls -lh /mnt/backup/
+ls -lh /backup/
 ```
 
 ### Step 5: Schedule Automatic Backups with Cron
@@ -430,13 +422,13 @@ To restore database from backup:
 
 ```bash
 # List available backups
-ls -lh /mnt/backup/
+ls -lh /backup/
 
 # Decompress backup
-gunzip /mnt/backup/notesdb_YYYYMMDD_HHMMSS.sql.gz
+gunzip /backup/notesdb_YYYYMMDD_HHMMSS.sql.gz
 
 # Restore to database
-mysql -u notesuser -p notesdb < /mnt/backup/notesdb_YYYYMMDD_HHMMSS.sql
+mysql -u notesuser -p notesdb < /backup/notesdb_YYYYMMDD_HHMMSS.sql
 ```
 
 ## 🐛 Troubleshooting
@@ -534,7 +526,34 @@ SELECT COUNT(*) FROM notes;
 - [ ] Implement CI/CD pipeline
 - [ ] Add automated testing
 
-## 📄 License
+## 🧪 Example: User Input & Output
+
+### User Input Form (via browser):
+```
+┌─────────────────────────────────────┐
+│ Note Title                          │
+├─────────────────────────────────────┤
+│ Write your note here...             │
+│                                     │
+│                                     │
+└─────────────────────────────────────┘
+        [ Add Note ]
+```
+
+### Example Note Input:
+**Title**: "IAM Policy Review"  
+**Content**: "Don't forget to review the IAM policy lecture notes."
+
+### Expected Output on Webpage:
+```
+🕒 2025-07-12 21:15:07
+📌 IAM Policy Review
+Don't forget to review the IAM policy lecture notes.
+
+    [ Edit ]  [ Delete ]
+```
+
+**Note**: Each new note appears at the top of the list with its creation timestamp. The most recent notes are always displayed first.
 
 This project is for educational purposes as part of a DevOps learning project.
 

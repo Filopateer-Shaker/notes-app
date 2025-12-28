@@ -56,11 +56,11 @@ async function loadNotes() {
 function displayNotes(notes) {
     notesContainer.innerHTML = notes.map(note => `
         <div class="note-card" data-id="${note.id}">
-            <h3>${escapeHtml(note.title)}</h3>
-            <p>${escapeHtml(note.content)}</p>
             <div class="note-meta">
-                Last updated: ${formatDate(note.updated_at)}
+                🕒 ${formatDate(note.created_at)}
             </div>
+            <h3>📌 ${escapeHtml(note.title)}</h3>
+            <p>${escapeHtml(note.content)}</p>
             <div class="note-actions">
                 <button class="edit-btn" onclick="editNote(${note.id})">Edit</button>
                 <button class="delete-btn" onclick="deleteNote(${note.id})">Delete</button>
