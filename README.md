@@ -152,7 +152,7 @@ curl http://localhost:5000/api/notes
    - **Key Pair**: Create or select existing key pair for SSH access
    - **Security Group**: Configure the following rules:
      - SSH (Port 22) - Your IP or 0.0.0.0/0
-     - HTTP (Port 80) - Anywhere (0.0.0.0/0)
+     - Custom TCP (Port 8000) - Anywhere (0.0.0.0/0)
    - **Storage**: 8 GB (default) or more if needed
 
 ### Step 2: Connect to EC2
@@ -203,10 +203,21 @@ EXIT;
 
 ### Step 6: Clone and Deploy Application
 
+**IMPORTANT:** Deploy to `/opt` instead of `/home/ec2-user` to avoid SELinux permission issues.
+
 ```bash
-cd /home/ec2-user  # or /home/ubuntu
-git clone https://github.com/Filopateer-Shaker/notes-app.git
-cd notes-app
+# Create and navigate to /opt directory
+sudo mkdir -p /opt
+cd /opt
+
+# Clone the repository
+sudo git clone https://github.com/Filopateer-Shaker/notes-app.git
+
+# Change ownership to ec2-user
+sudo chown -R ec2-user:ec2-user /opt/notes-app
+
+# Navigate to project directory
+cd /opt/notes-app
 
 # Create virtual environment
 python3 -m venv venv
@@ -214,15 +225,17 @@ source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
+pip install gunicorn
 ```
 
 ### Step 7: Configure Environment
 
 ```bash
-nano .env
+# Create .env file
+vi .env
 ```
 
-Add the following:
+Add the following (press `i` to insert, then `ESC` + `:wq` to save):
 ```env
 DB_HOST=localhost
 DB_USER=notesuser
@@ -241,32 +254,26 @@ python3 -c "import secrets; print(secrets.token_hex(32))"
 ### Step 8: Test the Application
 
 ```bash
-python3 app.py
+# Make sure you're in the virtual environment
+source /opt/notes-app/venv/bin/activate
+
+# Test with Gunicorn
+gunicorn -w 4 -b 0.0.0.0:8000 app:app
 ```
 
-Open browser: `http://your-ec2-public-ip:5000`
+Open browser: `http://your-ec2-public-ip:8000`
 
 If it works, press `Ctrl + C` to stop.
 
-### Step 9: Run with Production Server (Gunicorn)
-
-```bash
-# Install Gunicorn
-pip install gunicorn
-
-# Run on port 80 (requires sudo)
-sudo /home/ec2-user/notes-app/venv/bin/gunicorn -w 4 -b 0.0.0.0:80 app:app
-```
-
-### Step 10: Set up as System Service
+### Step 9: Set up as System Service
 
 Create systemd service file:
 
 ```bash
-sudo nano /etc/systemd/system/notes-app.service
+sudo vi /etc/systemd/system/notes-app.service
 ```
 
-Add the following content:
+Add the following content (press `i` to insert, then `ESC` + `:wq` to save):
 
 ```ini
 [Unit]
@@ -274,28 +281,65 @@ Description=Notes App - Flask Application
 After=network.target mariadb.service
 
 [Service]
+Type=notify
 User=ec2-user
-WorkingDirectory=/home/ec2-user/notes-app
-Environment="PATH=/home/ec2-user/notes-app/venv/bin"
-ExecStart=/home/ec2-user/notes-app/venv/bin/gunicorn -w 4 -b 0.0.0.0:80 app:app
+Group=ec2-user
+WorkingDirectory=/opt/notes-app
+Environment="PATH=/opt/notes-app/venv/bin"
+ExecStart=/opt/notes-app/venv/bin/gunicorn -w 4 -b 0.0.0.0:8000 app:app
 Restart=always
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-**For Ubuntu**, change `User=ec2-user` to `User=ubuntu` and update paths accordingly.
+**Key Configuration Details:**
+- `Type=notify`: Tells systemd that Gunicorn will notify when it's ready
+- `After=mariadb.service`: Ensures database starts before the app
+- `RestartSec=10`: Waits 10 seconds before restarting on failure
+- `Environment="PATH=..."`: Ensures the virtual environment is used
 
-Enable and start the service:
+### Step 10: Enable and Start the Service
 
 ```bash
+# Reload systemd to recognize the new service
 sudo systemctl daemon-reload
-sudo systemctl start notes-app
+
+# Enable the service (start on boot)
 sudo systemctl enable notes-app
+
+# Start the service
+sudo systemctl start notes-app
+
+# Check status
 sudo systemctl status notes-app
 ```
 
-Now your app runs automatically on boot!
+You should see: `Active: active (running)`
+
+**If the service fails to start, check logs:**
+```bash
+sudo journalctl -u notes-app -n 50 --no-pager
+```
+
+### Step 11: Verify Deployment
+
+```bash
+# Check if the service is running
+sudo systemctl status notes-app
+
+# Check if port 8000 is listening
+sudo netstat -tulpn | grep :8000
+
+# Test from the server
+curl http://localhost:8000
+
+# Access from your browser
+# Open: http://your-ec2-public-ip:8000
+```
+
+Now your app runs automatically on boot! 🚀
 
 ## 💾 EBS Backup Solution
 
@@ -333,7 +377,7 @@ echo '/dev/xvdf /backup ext4 defaults,nofail 0 2' | sudo tee -a /etc/fstab
 ### Step 3: Create Backup Script
 
 ```bash
-sudo nano /usr/local/bin/backup-notes.sh
+sudo vi /usr/local/bin/backup-notes.sh
 ```
 
 Add the following:
@@ -433,11 +477,57 @@ mysql -u notesuser -p notesdb < /backup/notesdb_YYYYMMDD_HHMMSS.sql
 
 ## 🐛 Troubleshooting
 
+### SELinux Permission Issues (RHEL/CentOS)
+
+**Issue**: `Permission denied` errors when starting the systemd service
+
+**Symptoms:**
+```
+notes-app.service: Failed at step EXEC spawning /home/ec2-user/notes-app/venv/bin/gunicorn: Permission denied
+```
+
+**Solution:**
+
+SELinux prevents systemd from executing files in `/home` directories. Use one of these solutions:
+
+**Option 1: Move to /opt (Recommended)**
+```bash
+# Stop the service
+sudo systemctl stop notes-app
+
+# Move application
+sudo mv /home/ec2-user/notes-app /opt/
+sudo chown -R ec2-user:ec2-user /opt/notes-app
+
+# Update service file paths
+sudo vi /etc/systemd/system/notes-app.service
+# Change all paths from /home/ec2-user/notes-app to /opt/notes-app
+
+# Reload and restart
+sudo systemctl daemon-reload
+sudo systemctl start notes-app
+```
+
+**Option 2: Fix SELinux Context**
+```bash
+# Check SELinux status
+getenforce
+
+# Fix context for home directory (if you must use /home)
+sudo semanage fcontext -a -t bin_t '/home/ec2-user/notes-app/venv/bin(/.*)?'
+sudo restorecon -R -v /home/ec2-user/notes-app/venv/bin
+```
+
+**Option 3: Temporarily Disable SELinux (NOT recommended for production)**
+```bash
+sudo setenforce 0
+```
+
 ### Database Connection Errors
 
 **Issue**: `Access denied for user`
 - Check credentials in `.env` file
-- Verify user exists in MariaDB
+- Verify user exists in MariaDB: `mysql -u root -p -e "SELECT User, Host FROM mysql.user;"`
 - Check password is correct
 
 **Issue**: `Can't connect to MySQL server`
@@ -446,29 +536,54 @@ mysql -u notesuser -p notesdb < /backup/notesdb_YYYYMMDD_HHMMSS.sql
 
 ### Application Errors
 
-**Issue**: `Port 80 permission denied`
-- Run with sudo or use port > 1024
-- Or configure Gunicorn as systemd service (recommended)
+**Issue**: Service shows `activating (auto-restart)`
+- Check logs: `sudo journalctl -u notes-app -n 50 --no-pager`
+- Verify paths in service file are correct
+- Ensure virtual environment exists and has Gunicorn installed
 
 **Issue**: `ModuleNotFoundError`
 - Ensure virtual environment is activated
 - Reinstall dependencies: `pip install -r requirements.txt`
+- Make sure Gunicorn is installed: `pip install gunicorn`
 
 **Issue**: `Template not found`
-- Check `templates/` folder exists
+- Check `templates/` folder exists in `/opt/notes-app/`
 - Verify `index.html` is in `templates/` directory
 
 ### EC2 Access Issues
 
 **Issue**: Can't access app from browser
-- Check Security Group allows inbound traffic on port 80 or 5000
-- Verify EC2 public IP is correct
-- Check if app is running: `sudo systemctl status notes-app`
+- Verify Security Group allows inbound traffic on port 8000
+- Check EC2 public IP is correct
+- Verify app is running: `sudo systemctl status notes-app`
+- Test locally first: `curl http://localhost:8000`
 
 **Issue**: SSH connection refused
 - Verify key pair permissions: `chmod 400 your-key.pem`
 - Check Security Group allows SSH from your IP
 - Verify EC2 instance is running
+
+### Service Management
+
+**Restart the service:**
+```bash
+sudo systemctl restart notes-app
+```
+
+**Stop the service:**
+```bash
+sudo systemctl stop notes-app
+```
+
+**View service status:**
+```bash
+sudo systemctl status notes-app
+```
+
+**View recent logs:**
+```bash
+sudo journalctl -u notes-app -f
+```
 
 ## 📊 Monitoring
 
@@ -478,11 +593,16 @@ mysql -u notesuser -p notesdb < /backup/notesdb_YYYYMMDD_HHMMSS.sql
 # Service status
 sudo systemctl status notes-app
 
-# View logs
+# View logs in real-time
 sudo journalctl -u notes-app -f
 
-# Check if port 80 is listening
-sudo netstat -tulpn | grep :80
+# View last 50 log lines
+sudo journalctl -u notes-app -n 50 --no-pager
+
+# Check if port 8000 is listening
+sudo netstat -tulpn | grep :8000
+# OR
+sudo ss -tulpn | grep :8000
 ```
 
 ### Database Monitoring
@@ -502,16 +622,41 @@ USE notesdb;
 SELECT COUNT(*) FROM notes;
 ```
 
+### System Resources
+
+```bash
+# Check disk space
+df -h
+
+# Check memory usage
+free -h
+
+# Check CPU usage
+top
+
+# Check running processes
+ps aux | grep gunicorn
+```
+
 ## 🔒 Security Best Practices
 
 1. **Never commit `.env` file** to Git (already in `.gitignore`)
 2. **Use strong passwords** for database and secret keys
 3. **Limit Security Group rules** to specific IPs when possible
-4. **Keep system updated**: `sudo dnf update -y` or `sudo apt update && sudo apt upgrade -y`
-5. **Enable firewall** on EC2 instance
+4. **Keep system updated**: 
+   - RHEL: `sudo dnf update -y`
+   - Ubuntu: `sudo apt update && sudo apt upgrade -y`
+5. **Enable firewall** on EC2 instance:
+   ```bash
+   # RHEL/CentOS
+   sudo firewall-cmd --permanent --add-port=8000/tcp
+   sudo firewall-cmd --reload
+   ```
 6. **Regular backups** to EBS volume
 7. **Monitor logs** for suspicious activity
-8. **Use HTTPS** in production (consider AWS Certificate Manager + Load Balancer)
+8. **Use HTTPS** in production (consider AWS Certificate Manager + Load Balancer or Let's Encrypt)
+9. **SELinux**: Keep it enabled (enforcing mode) for better security
+10. **Principle of least privilege**: Use dedicated service accounts with minimal permissions
 
 ## 📝 To-Do / Future Enhancements
 
@@ -521,10 +666,13 @@ SELECT COUNT(*) FROM notes;
 - [ ] Enable note sharing
 - [ ] Add rich text editor
 - [ ] Implement API rate limiting
-- [ ] Set up HTTPS with SSL certificate
+- [ ] Set up HTTPS with SSL certificate (Let's Encrypt)
+- [ ] Configure Nginx as reverse proxy for better performance
 - [ ] Add Docker containerization
 - [ ] Implement CI/CD pipeline
 - [ ] Add automated testing
+- [ ] Set up monitoring with Prometheus/Grafana
+- [ ] Implement Redis for caching
 
 ## 🧪 Example: User Input & Output
 
@@ -554,6 +702,14 @@ Don't forget to review the IAM policy lecture notes.
 ```
 
 **Note**: Each new note appears at the top of the list with its creation timestamp. The most recent notes are always displayed first.
+
+## 🎯 Why These Deployment Choices?
+
+- **`/opt` directory**: Standard Linux location for optional third-party software, avoids SELinux home directory restrictions
+- **Port 8000**: No special permissions required (unlike port 80), easier to debug
+- **systemd**: Modern init system, automatic restarts, easy log management
+- **Gunicorn**: Production-grade WSGI server, supports multiple workers, better than Flask dev server
+- **EBS volumes**: Separate backups from main instance, snapshots, easy to detach/attach
 
 This project is for educational purposes as part of a DevOps learning project.
 
